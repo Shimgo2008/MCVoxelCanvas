@@ -1,12 +1,19 @@
+"""
+python3 main.py
+    help: --help
+    file: --input_image <input_image_path>
+    output: --output_image <output_image_path>
+"""
+
+import argparse
+import os
+
 import matplotlib.pyplot as plt
-from PIL import Image
 import numpy as np
+from PIL import Image
 from tqdm import tqdm
 
 from colormap import color_palette
-
-W_COLOR = 9.0
-W_GRADIENT = 1.0
 
 
 def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.Image:
@@ -34,6 +41,13 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
             # 事前計算したColor Costの配列を取得
             color_costs = all_color_costs[y, x]
 
+            min_color_cost = np.min(color_costs)
+            normalized_distance = min_color_cost / 441.7  # np.sqrt(255**2 * 3)
+
+            decay_factor = np.sign(1.0 - normalized_distance)
+            W_GRADIENT_DYNAMIC = 0.03 * decay_factor  # 距離0で0.03、距離が最大に近づくと0
+            W_COLOR_DYNAMIC = 1.0 - W_GRADIENT_DYNAMIC
+
             # Gradient Costを計算 (この部分は逐次処理が必須)
             gradient_costs = np.zeros(num_colors)
             num_neighbors = 0
@@ -53,7 +67,7 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
                 gradient_costs /= num_neighbors
 
             # 総コストを計算
-            total_costs = (W_COLOR * color_costs) + (W_GRADIENT * gradient_costs)
+            total_costs = (W_COLOR_DYNAMIC * color_costs) + (W_GRADIENT_DYNAMIC * gradient_costs)
 
             # 最小コストの色のインデックスを見つける
             best_color_index = np.argmin(total_costs)
@@ -65,18 +79,33 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Image Color Quantization using Hybrid Approach (Fast Version)")
+    parser.add_argument("-i", "--input_image", type=str, required=True, help="Path to the input image.")
+    parser.add_argument("-o", "--output_image", type=str, default="out/output_image_fast.png", help="Path to save the output image.")
+    parser.add_argument(
+        "-m", "--mode",
+        type=str,
+        choices=['vanilla', 'all'],
+        default='vanilla',
+        help="Color palette mode: 'vanilla' for standard 3 shades, 'all' for extended 4 shades."
+    )
+
+    args = parser.parse_args()
+
     print("Loading color palette...")
-    palette_rgb = np.array(color_palette('rgb'))
+    palette_rgb = np.array(color_palette('rgb', args.mode))
 
     print("Loading input image...")
-    import_image = Image.open("asunoyozora.png").convert("RGB")
+    import_image = Image.open(args.input_image).convert("RGB")
 
     print("Starting image conversion (Fast version)...")
-
     output_image = convert_image_fast(import_image, palette_rgb)
 
     print("Conversion complete!")
-    output_image.save("output_image_fast.png")
+    output_path = args.output_image
+    if os.path.dirname(output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_image.save(output_path)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     axes[0].imshow(import_image)
