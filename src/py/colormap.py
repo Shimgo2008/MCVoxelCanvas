@@ -1,5 +1,6 @@
 import json
 from typing import List, Literal
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,6 +8,13 @@ from numpy.typing import NDArray
 
 color_data: str = ""
 
+
+@dataclass
+class Color:
+    id: str
+    shade: str
+    rgb: List[int]
+    hex: str
 
 def plot_colors_in_rgb_space(hex_colors: List[str]) -> None:
     """
@@ -46,7 +54,7 @@ def plot_colors_in_rgb_space(hex_colors: List[str]) -> None:
     plt.show()
 
 
-def color_palette(type: Literal['hex', 'rgb'], mode: Literal['vanilla', 'all'] = 'vanilla') -> NDArray[np.str_] | NDArray[NDArray[np.int_]]:
+def color_palette(mode: Literal['vanilla', 'all'] = 'vanilla') -> List[Color]:
     """Print color_data as pretty JSON when run as a script."""
 
     color_data_path: str = 'all_color_data.json' if mode == 'all' else 'color_data.json'
@@ -54,16 +62,20 @@ def color_palette(type: Literal['hex', 'rgb'], mode: Literal['vanilla', 'all'] =
         color_data = f.read()
 
     parsed_data = json.loads(color_data)
-    shades = [shade for item in parsed_data for shade in item["shades"].values()]
+    shades: List[Color] = [
+        Color(
+            id=item["id"],
+            shade=shade_name,
+            **color_data
+        )
+        for item in parsed_data
+        for shade_name, color_data in item["shades"].items()
+    ]
 
     with open("output.json", "w", encoding="utf-8") as f:
-        json.dump(shades, f, indent=4, ensure_ascii=False)
+        json.dump([color.__dict__ for color in shades], f, indent=4, ensure_ascii=False)
 
-    results = []
-    for color in shades:
-        results.append(color[type])
-
-    return np.array(results)
+    return shades
 
 
 if __name__ == "__main__":
