@@ -1,6 +1,16 @@
+"""
+python3 main.py
+    help: --help
+    file: --input_image <input_image_path>
+    output: --output_image <output_image_path>
+"""
+
+import argparse
+import os
+
 import matplotlib.pyplot as plt
-from PIL import Image
 import numpy as np
+from PIL import Image
 from tqdm import tqdm
 
 from colormap import color_palette
@@ -65,18 +75,33 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Image Color Quantization using Hybrid Approach (Fast Version)")
+    parser.add_argument("-i", "--input_image", type=str, required=True, help="Path to the input image.")
+    parser.add_argument("-o", "--output_image", type=str, default="out/output_image_fast.png", help="Path to save the output image.")
+    # choicesを分かりやすい文字列に統一し、デフォルトも文字列にする
+    parser.add_argument(
+        "-m", "--mode",
+        type=str,
+        choices=['vanilla', 'all'],
+        default='vanilla',
+        help="Color palette mode: 'vanilla' for standard 3 shades, 'all' for extended 4 shades."
+    )
+
+    args = parser.parse_args()
+
     print("Loading color palette...")
-    palette_rgb = np.array(color_palette('rgb'))
+    palette_rgb = np.array(color_palette('rgb', args.mode))
 
     print("Loading input image...")
-    import_image = Image.open("asunoyozora.png").convert("RGB")
+    import_image = Image.open(args.input_image).convert("RGB")
 
     print("Starting image conversion (Fast version)...")
-
     output_image = convert_image_fast(import_image, palette_rgb)
 
     print("Conversion complete!")
-    output_image.save("output_image_fast.png")
+    output_path = args.output_image
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_image.save(output_path)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     axes[0].imshow(import_image)
