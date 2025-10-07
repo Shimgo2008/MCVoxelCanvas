@@ -103,7 +103,8 @@ if __name__ == "__main__":
 
     print("Conversion complete!")
     output_path = args.output_image
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if os.path.dirname(output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
     output_image.save(output_path)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
