@@ -15,9 +15,6 @@ from tqdm import tqdm
 
 from colormap import color_palette
 
-W_COLOR = 9.0
-W_GRADIENT = 1.0
-
 
 def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.Image:
     """
@@ -44,6 +41,13 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
             # 事前計算したColor Costの配列を取得
             color_costs = all_color_costs[y, x]
 
+            min_color_cost = np.min(color_costs)
+            normalized_distance = min_color_cost / 441.7  # np.sqrt(255**2 * 3)
+
+            decay_factor = np.sign(1.0 - normalized_distance)
+            W_GRADIENT_DYNAMIC = 0.03 * decay_factor  # 距離0で0.5、距離が最大に近づくと0
+            W_COLOR_DYNAMIC = 1.0 - W_GRADIENT_DYNAMIC
+
             # Gradient Costを計算 (この部分は逐次処理が必須)
             gradient_costs = np.zeros(num_colors)
             num_neighbors = 0
@@ -63,7 +67,7 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
                 gradient_costs /= num_neighbors
 
             # 総コストを計算
-            total_costs = (W_COLOR * color_costs) + (W_GRADIENT * gradient_costs)
+            total_costs = (W_COLOR_DYNAMIC * color_costs) + (W_GRADIENT_DYNAMIC * gradient_costs)
 
             # 最小コストの色のインデックスを見つける
             best_color_index = np.argmin(total_costs)
@@ -78,7 +82,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Image Color Quantization using Hybrid Approach (Fast Version)")
     parser.add_argument("-i", "--input_image", type=str, required=True, help="Path to the input image.")
     parser.add_argument("-o", "--output_image", type=str, default="out/output_image_fast.png", help="Path to save the output image.")
-    # choicesを分かりやすい文字列に統一し、デフォルトも文字列にする
     parser.add_argument(
         "-m", "--mode",
         type=str,
