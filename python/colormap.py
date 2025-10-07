@@ -1,9 +1,9 @@
+import json
+from typing import List, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
-import json
-from typing import List, Literal
 
 color_data: str = ""
 
@@ -46,9 +46,10 @@ def plot_colors_in_rgb_space(hex_colors: List[str]) -> None:
     plt.show()
 
 
-def color_palette(type: Literal['hex', 'rgb'], mode: Literal[None, 'all'] = None) -> NDArray[np.str_] | NDArray[NDArray[np.int_]]:
+def color_palette(type: Literal['hex', 'rgb'], mode: Literal['vanilla', 'all'] = 'vanilla') -> NDArray[np.str_] | NDArray[NDArray[np.int_]]:
     """Print color_data as pretty JSON when run as a script."""
-    color_data_path: str = 'all_color_data.json' if mode else 'color_data.json'
+
+    color_data_path: str = 'all_color_data.json' if mode == 'all' else 'color_data.json'
     with open(color_data_path, "r", encoding="utf-8") as f:
         color_data = f.read()
 
