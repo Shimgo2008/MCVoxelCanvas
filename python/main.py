@@ -45,7 +45,7 @@ def convert_image_fast(input_image: Image.Image, palette: np.ndarray) -> Image.I
             normalized_distance = min_color_cost / 441.7  # np.sqrt(255**2 * 3)
 
             decay_factor = np.sign(1.0 - normalized_distance)
-            W_GRADIENT_DYNAMIC = 0.03 * decay_factor  # 距離0で0.5、距離が最大に近づくと0
+            W_GRADIENT_DYNAMIC = 0.03 * decay_factor  # 距離0で0.03、距離が最大に近づくと0
             W_COLOR_DYNAMIC = 1.0 - W_GRADIENT_DYNAMIC
 
             # Gradient Costを計算 (この部分は逐次処理が必須)
