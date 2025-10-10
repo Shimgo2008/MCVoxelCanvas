@@ -2,6 +2,7 @@ import argparse
 import struct
 import os
 import zlib
+from dataclasses import dataclass
 
 from typing import Optional, List, Tuple, Literal
 
@@ -27,20 +28,43 @@ TAG_NAMES = {
     11: "IntArray", 12: "LongArray"
 }
 
-def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact') -> str:
+head = """
+;00 End
+;01 Byte
+;02 Short
+;03 Int
+;04 Long
+;05 Float
+;06 Double
+;07 Byte Array
+;08 String
+;09 List
+;0A Compound
+;0B Int Array
+;0C Long Array
+
+;基本的な構造: [タグID (1byte)] [名前の長さ (2byte)] [名前 (UTF-8)] [データ本体]
+
+"""
+
+
+def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact') -> str:
     """
     Parses NBT binary data and outputs a styled, human-readable string representation,
     similar to a debugger view, including tag types, name lengths, and payloads.
     """
-    
+
     hex_str = data.hex()
     hex_data: List[str] = [hex_str[i:i + 2] for i in range(0, len(hex_str), 2)]
     hex_len: int = len(hex_data)
-    
+
     ci: int = 0  # Current Index (byte offset)
     indent_level: int = 0
     output_lines: List[str] = []
     show_values = (mode == 'detailed')
+
+    if mode == 'detailed':
+        output_lines.append(head)
 
     def _format_numeric_value(tag_type: int, payload_bytes: bytes) -> Optional[str]:
         """Return string of parsed value for numeric tag types, or None if not applicable."""
@@ -61,7 +85,7 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
         except Exception:
             return None
         return None
-    
+
     # --- Stream Reading Helpers (変更なし) ---
     def ensure_available(start: int, need: int, what: str = "bytes") -> None:
         if start + need > hex_len:
@@ -94,20 +118,20 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
     def get_tag_header(offset: int) -> Optional[Tuple[int, int, str, bytes]]:
         ensure_available(offset, 1, "tag type")
         tag_type = int(hex_data[offset], 16)
-        
+
         if tag_type == TAG_END:
             return None
 
         start_ci = offset
         ensure_available(start_ci, 3, "tag header (type + name length)")
-        
+
         tag_type = int(hex_data[start_ci], 16)
-        name_len = int(''.join(hex_data[start_ci+1:start_ci+3]), 16)
-        
+        name_len = int(''.join(hex_data[start_ci + 1:start_ci + 3]), 16)
+
         ensure_available(start_ci + 3, name_len, "tag name bytes")
         name_bytes = peek_bytes(start_ci + 3, name_len)
         name = name_bytes.decode('utf-8', errors='replace')
-        
+
         return tag_type, name_len, name, name_bytes
 
     # --- Tag Handlers (Core Logic) ---
@@ -129,32 +153,28 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
                     name_len = 0
                 else:
                     tag_type, name_len, tag_name, _ = header
-                
+
                 ci += (3 + name_len) if tag_type != TAG_END else 1
-            
+
         except ValueError as e:
             output_lines.append(f"{'    ' * indent_level}; Error reading tag header: {e}")
             raise e
-            
+
         tag_type_hex = f"{tag_type:02X}"
         prefix = f"{'    ' * indent_level}{tag_type_hex}"
-        
+
         if tag_type == TAG_END:
-            output_lines.append(f"{'    ' * indent_level}00")
+            output_lines.append(f"{'    ' * (indent_level - 1)}00")
             return
 
         if not is_list_element:
             name_len_hex = f"{name_len:04X}"
             prefix += f" {name_len_hex} {tag_name}"
 
-        # 2. Read Payload and format output
-        
-        # Pylanceの警告を回避するため、match/caseではなくif/elifを多用する
-        
         if tag_type in (TAG_BYTE, TAG_SHORT, TAG_INT, TAG_FLOAT):
             size = {TAG_BYTE: 1, TAG_SHORT: 2, TAG_INT: 4, TAG_FLOAT: 4}[tag_type]
             payload_bytes = read_bytes(size, TAG_NAMES[tag_type])
-            
+
             if tag_type == TAG_INT:
                 if show_values:
                     value = _format_numeric_value(tag_type, payload_bytes)
@@ -167,20 +187,20 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()} (Value: {value})")
                 else:
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()}")
-            else: # TAG_BYTE, TAG_FLOAT
+            else:  # TAG_BYTE, TAG_FLOAT
                 output_lines.append(f"{prefix} {payload_bytes.hex().upper()}")
 
         elif tag_type in (TAG_LONG, TAG_DOUBLE):
             size = {TAG_LONG: 8, TAG_DOUBLE: 8}[tag_type]
             payload_bytes = read_bytes(size, TAG_NAMES[tag_type])
-            
+
             if tag_type == TAG_LONG:
                 if show_values:
                     value = _format_numeric_value(tag_type, payload_bytes)
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()} (Value: {value})")
                 else:
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()}")
-            else: # TAG_DOUBLE
+            else:  # TAG_DOUBLE
                 if show_values:
                     # attempt to show parsed double value
                     value = _format_numeric_value(tag_type, payload_bytes)
@@ -199,31 +219,33 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
 
         elif tag_type in (TAG_BYTE_ARRAY, TAG_INT_ARRAY, TAG_LONG_ARRAY):
             type_name = TAG_NAMES[tag_type]
-            
+
             array_len = read_uint(4, f"{type_name} length")
             array_len_hex = f"{array_len:08X}"
-            
+
             element_size = {TAG_BYTE_ARRAY: 1, TAG_INT_ARRAY: 4, TAG_LONG_ARRAY: 8}[tag_type]
             data_size = array_len * element_size
-            
+
             payload_bytes = read_bytes(data_size, f"{type_name} payload")
-            
-            payload_snippet = payload_bytes[:min(16, data_size)].hex().upper()
-            if data_size > 16:
-                payload_snippet += "..."
-                
-            output_lines.append(f"{prefix} {array_len_hex} (Length: {array_len}) {payload_snippet}")
+
+            payload_snippet = payload_bytes.hex().upper()
+            split_bytes = [payload_snippet[i:i + element_size * 2] for i in range(0, len(payload_snippet), element_size * 2)]
+
+            output_lines.append(f"{prefix} {array_len_hex} (Length: {array_len})")
+            for i in split_bytes:
+                value = _format_numeric_value({TAG_BYTE_ARRAY: TAG_BYTE, TAG_INT_ARRAY: TAG_INT, TAG_LONG_ARRAY: TAG_LONG}[tag_type], bytes.fromhex(i))
+                output_lines.append(f"{'    ' * (indent_level + 1)}{i} (Value: {value})")
 
         elif tag_type == TAG_LIST:
             list_type = read_uint(1, "list type")
             list_type_hex = f"{list_type:02X}"
             list_type_name = TAG_NAMES.get(list_type, f"Unknown({list_type})")
-            
+
             list_len = read_uint(4, "list length")
             list_len_hex = f"{list_len:08X}"
 
             output_lines.append(f"{prefix} {list_type_hex} ({list_type_name}) {list_len_hex} (Count: {list_len})")
-            
+
             indent_level += 1
             for idx in range(list_len):
                 if list_type in (TAG_COMPOUND, TAG_LIST):
@@ -233,10 +255,10 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
                         TAG_BYTE: 1, TAG_SHORT: 2, TAG_INT: 4, TAG_LONG: 8,
                         TAG_FLOAT: 4, TAG_DOUBLE: 8,
                     }.get(list_type, -1)
-                    
+
                     element_type_hex = f"{list_type:02X}"
                     element_prefix = f"{'    ' * indent_level}{element_type_hex} {tag_name}[{idx}]"
-                    
+
                     if size > 0:
                         element_bytes = read_bytes(size, f"list {list_type_name} element")
                         if show_values and list_type in (TAG_BYTE, TAG_SHORT, TAG_INT, TAG_LONG, TAG_FLOAT, TAG_DOUBLE):
@@ -258,40 +280,40 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
                         element_sz = {TAG_BYTE_ARRAY: 1, TAG_INT_ARRAY: 4, TAG_LONG_ARRAY: 8}[list_type]
                         data_size = array_len * element_sz
                         payload_bytes = read_bytes(data_size, f"list {type_name} payload")
-                        
+
                         payload_snippet = payload_bytes[:min(16, data_size)].hex().upper()
                         if data_size > 16:
                             payload_snippet += "..."
                         output_lines.append(f"{element_prefix} {array_len:08X} (Length: {array_len}) {payload_snippet}")
                     else:
-                         raise ValueError(f"Unsupported list element type: {list_type_hex}")
+                        raise ValueError(f"Unsupported list element type: {list_type_hex}")
 
             indent_level -= 1
 
         elif tag_type == TAG_COMPOUND:
             output_lines.append(prefix)
-            
+
             indent_level += 1
             while ci < hex_len:
                 ensure_available(ci, 1, "compound inner tag type peek")
                 if hex_data[ci] == "00":
-                    parse_tag(is_list_element=False) 
+                    parse_tag(is_list_element=False)
                     break
                 parse_tag(is_list_element=False)
-            
-            if ci >= hex_len and (ci == 0 or hex_data[ci-1] != "00"):
-                 output_lines.append(f"{'    ' * indent_level}; Error: Compound did not terminate with TAG_END.")
+
+            if ci >= hex_len and (ci == 0 or hex_data[ci-1] != "00"):  # noqa
+                 output_lines.append(f"{'    ' * indent_level}; Error: Compound did not terminate with TAG_END.")  # noqa
 
             indent_level -= 1
-        
+
         else:
             raise ValueError(f"Unsupported tag type encountered: {tag_type_hex} ({TAG_NAMES.get(tag_type)}) at offset {ci}")
 
     # --- Main Parsing Loop (変更なし) ---
-    
+
     try:
         parse_tag(is_list_element=False)
-        
+
         if ci < hex_len:
             output_lines.append(f"\n; WARNING: {hex_len - ci} trailing bytes remaining after parsing.")
 
@@ -301,14 +323,29 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed']= 'compact')
     return "\n".join(output_lines)
 
 
+@dataclass
+class arg:
+    input_file: str
+    output_file: Optional[str] = None
+    mode: Literal['compact', 'detailed'] = 'compact'
+
+
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Styled NBT Binary to Text Transformer.")
-    arg_parser.add_argument("-i", "--input_file", type=str, required=True, help="Input binary NBT file")
+
+    arg_parser.add_argument("-i", "--input_file", type=str, help="Input binary NBT file")
     arg_parser.add_argument("-o", "--output_file", type=str, help="Output text file (optional, defaults to stdout)")
-    arg_parser.add_argument("-m", "--mode", choices=['compact', 'detailed'], default='compact', help="Display mode: 'compact' (no numeric values) or 'detailed' (show numeric values)")
+    arg_parser.add_argument("-m", "--mode", choices=['compact', 'detailed'], default='compact', help="Display mode")
+    arg_parser.add_argument("-d", "--debug", default=True, action='store_false', help="Enable debug mode (overrides input/output)")
+
     args = arg_parser.parse_args()
-    
-    # litematic fileの場合gzip展開する
+
+    if args.debug:
+        print("--- DEBUG MODE ENABLED ---")
+        args.input_file = "beacon.litematic"
+        args.output_file = "beacon.r"
+        args.mode = 'compact'
+
     if args.input_file.endswith('.litematic'):
         try:
             with open(args.input_file, 'rb') as f:
@@ -326,14 +363,14 @@ if __name__ == "__main__":
             exit(1)
 
     result_string = bin2nbt_styled(data, mode=args.mode)
-    print(result_string)
+    # print(result_string)
 
     if args.output_file:
-            output_dir = os.path.dirname(args.output_file)
-            
-            # ディレクトリパスが存在する場合（空文字列でない場合）にのみ作成
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-                
-            with open(args.output_file, "w") as f:
-                f.write(result_string)
+        output_dir = os.path.dirname(args.output_file)
+
+        # ディレクトリパスが存在する場合（空文字列でない場合）にのみ作成
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        with open(args.output_file, "w") as f:
+            f.write(result_string)
