@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from typing import Optional, List, Tuple, Literal, Dict
 
+from build3dpos import block_structure, format_3d_list
 
 # NBT Tag Type Constants
 TAG_END = 0
@@ -62,7 +63,7 @@ class arg:
     mode: Literal['compact', 'detailed'] = 'compact'
 
 
-def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact') -> str:
+def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact') -> tuple[str, MainData]:
     """
     Parses NBT binary data and outputs a styled, human-readable string representation,
     similar to a debugger view, including tag types, name lengths, and payloads.
@@ -72,7 +73,7 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
     hex_data: List[str] = [hex_str[i:i + 2] for i in range(0, len(hex_str), 2)]
     hex_len: int = len(hex_data)
 
-    ci: int = 0  # Current Index (byte offset)
+    ci: int = 0
     indent_level: int = 0
     output_lines: List[str] = []
     show_values = (mode == 'detailed')
@@ -99,7 +100,6 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
             return None
         return None
 
-    # --- Stream Reading Helpers (変更なし) ---
     def ensure_available(start: int, need: int, what: str = "bytes") -> None:
         if start + need > hex_len:
             available = hex_len - start
@@ -223,7 +223,6 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()}")
             else:  # TAG_DOUBLE
                 if show_values:
-                    # attempt to show parsed double value
                     value = _format_numeric_value(tag_type, payload_bytes)
                     if value is not None:
                         output_lines.append(f"{prefix} {payload_bytes.hex().upper()} (Value: {value})")
@@ -237,12 +236,11 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
             str_bytes = read_bytes(str_len, "string payload")
             s = str_bytes.decode('utf-8', errors='replace')
             output_lines.append(f"{prefix} {str_len_hex} {s}")
-            # Collect Name/Property values if we're gathering a BlockStatePalette entry
+
             if collector is not None:
-                # 'Name' is a direct field inside the palette element
                 if tag_name == 'Name':
                     collector['Name'] = s
-                # If parent is a Properties compound, the tag_name is the property key
+
                 elif parents_name == 'Properties':
                     collector.setdefault('Properties', {})[tag_name] = s
 
@@ -265,7 +263,6 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
                 value = _format_numeric_value({TAG_BYTE_ARRAY: TAG_BYTE, TAG_INT_ARRAY: TAG_INT, TAG_LONG_ARRAY: TAG_LONG}[tag_type], bytes.fromhex(i))
                 output_lines.append(f"{'    ' * (indent_level + 1)}{i} (Value: {value})")
 
-            # If this is the BlockStates long array, parse into Python ints and store
             if tag_type == TAG_LONG_ARRAY and tag_name == 'BlockStates':
                 try:
                     states = []
@@ -346,11 +343,9 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
             indent_level += 1
             while ci < hex_len:
                 ensure_available(ci, 1, "compound inner tag type peek")
-                # TAG_END が来たらそれを消費してループを抜ける
                 if hex_data[ci] == "00":
                     parse_tag(parents_name=tag_name, is_list_element=False, collector=current_collector)
                     break
-                # 子タグには常に current_collector を渡す（Properties 内の文字列を collector に格納するため）
                 parse_tag(parents_name=tag_name, is_list_element=False, collector=current_collector)
 
             if ci >= hex_len and (ci == 0 or hex_data[ci-1] != "00"):  # noqa
@@ -358,14 +353,11 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
 
             indent_level -= 1
 
-            # BlockStatePalette 要素として collector を作成していたら main_data に追加
             if append_collector and current_collector is not None:
                 main_data.palette.append(current_collector)
 
         else:
             raise ValueError(f"Unsupported tag type encountered: {tag_type_hex} ({TAG_NAMES.get(tag_type)}) at offset {ci}")
-
-    # --- Main Parsing Loop (変更なし) ---
 
     try:
         parse_tag(is_list_element=False)
@@ -413,7 +405,11 @@ if __name__ == "__main__":
 
     result_string, main_data = bin2nbt_styled(data, mode=args.mode)
 
-    print(main_data)
+    structure = block_structure(
+        size=main_data.size,
+        palette=main_data.palette,
+        blockstates=[int(s, 16) for s in main_data.states]
+    )
 
     if args.output_file:
 
@@ -422,9 +418,12 @@ if __name__ == "__main__":
 
         output_dir = os.path.dirname(args.output_file)
 
-        # ディレクトリパスが存在する場合（空文字列でない場合）にのみ作成
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
         with open(args.output_file, "w") as f:
+            f.write(result_string)
+
+            f.write("\n\n; --- Block Structure ---\n\n")
+            result_string = format_3d_list(structure.tolist())
             f.write(result_string)
