@@ -4,7 +4,7 @@ import os
 import zlib
 from dataclasses import dataclass
 
-from typing import Optional, List, Tuple, Literal
+from typing import Optional, List, Tuple, Literal, Dict
 
 
 # NBT Tag Type Constants
@@ -48,6 +48,20 @@ head = """
 """
 
 
+@dataclass
+class MainData:
+    size: Tuple[int, int, int]  # (width, height, depth)
+    palette: List[Dict]  # list of dict entries for BlockStatePalette
+    states: List[int]
+
+
+@dataclass
+class arg:
+    input_file: str
+    output_file: Optional[str] = None
+    mode: Literal['compact', 'detailed'] = 'compact'
+
+
 def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact') -> str:
     """
     Parses NBT binary data and outputs a styled, human-readable string representation,
@@ -63,8 +77,7 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
     output_lines: List[str] = []
     show_values = (mode == 'detailed')
 
-    if mode == 'detailed':
-        output_lines.append(head)
+    main_data = MainData(size=(0, 0, 0), palette=[], states=[])
 
     def _format_numeric_value(tag_type: int, payload_bytes: bytes) -> Optional[str]:
         """Return string of parsed value for numeric tag types, or None if not applicable."""
@@ -136,7 +149,7 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
 
     # --- Tag Handlers (Core Logic) ---
 
-    def parse_tag(is_list_element: bool = False, list_index: Optional[int] = None, list_type: Optional[int] = None):
+    def parse_tag(parents_name: str = None, is_list_element: bool = False, list_index: Optional[int] = None, list_type: Optional[int] = None, collector: Optional[dict] = None):
         nonlocal ci, indent_level
 
         # 1. Read Header (Type, Name Length, Name)
@@ -176,8 +189,16 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
             payload_bytes = read_bytes(size, TAG_NAMES[tag_type])
 
             if tag_type == TAG_INT:
+                value = _format_numeric_value(tag_type, payload_bytes)
+                if parents_name == "Size" and (tag_name == "x" or tag_name == "y" or tag_name == "z"):
+                    if tag_name == "x":
+                        main_data.size = (int(value), main_data.size[1], main_data.size[2])
+                    elif tag_name == "y":
+                        main_data.size = (main_data.size[0], int(value), main_data.size[2])
+                    elif tag_name == "z":
+                        main_data.size = (main_data.size[0], main_data.size[1], int(value))
+
                 if show_values:
-                    value = _format_numeric_value(tag_type, payload_bytes)
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()} (Value: {value})")
                 else:
                     output_lines.append(f"{prefix} {payload_bytes.hex().upper()}")
@@ -216,6 +237,14 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
             str_bytes = read_bytes(str_len, "string payload")
             s = str_bytes.decode('utf-8', errors='replace')
             output_lines.append(f"{prefix} {str_len_hex} {s}")
+            # Collect Name/Property values if we're gathering a BlockStatePalette entry
+            if collector is not None:
+                # 'Name' is a direct field inside the palette element
+                if tag_name == 'Name':
+                    collector['Name'] = s
+                # If parent is a Properties compound, the tag_name is the property key
+                elif parents_name == 'Properties':
+                    collector.setdefault('Properties', {})[tag_name] = s
 
         elif tag_type in (TAG_BYTE_ARRAY, TAG_INT_ARRAY, TAG_LONG_ARRAY):
             type_name = TAG_NAMES[tag_type]
@@ -236,6 +265,18 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
                 value = _format_numeric_value({TAG_BYTE_ARRAY: TAG_BYTE, TAG_INT_ARRAY: TAG_INT, TAG_LONG_ARRAY: TAG_LONG}[tag_type], bytes.fromhex(i))
                 output_lines.append(f"{'    ' * (indent_level + 1)}{i} (Value: {value})")
 
+            # If this is the BlockStates long array, parse into Python ints and store
+            if tag_type == TAG_LONG_ARRAY and tag_name == 'BlockStates':
+                try:
+                    states = []
+                    for off in range(0, len(payload_bytes), 8):
+                        chunk = payload_bytes[off:off + 8]
+                        states.append(f"0x{chunk.hex().upper()}")
+                    main_data.states = states
+                    output_lines.append(f"{'    ' * (indent_level + 1)}Parsed BlockStates count: {len(states)}")
+                except Exception as e:
+                    output_lines.append(f"{'    ' * (indent_level + 1)}; Error parsing BlockStates: {e}")
+
         elif tag_type == TAG_LIST:
             list_type = read_uint(1, "list type")
             list_type_hex = f"{list_type:02X}"
@@ -248,8 +289,10 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
 
             indent_level += 1
             for idx in range(list_len):
+                # Pass the list's name as parents_name so child compounds/strings know their parent
+                # さらに collector を伝搬する（必要な場合に collector を作成するロジックが子側で働く）
                 if list_type in (TAG_COMPOUND, TAG_LIST):
-                    parse_tag(is_list_element=True, list_index=idx, list_type=list_type)
+                    parse_tag(parents_name=tag_name, is_list_element=True, list_index=idx, list_type=list_type, collector=collector)
                 elif list_type != TAG_END:
                     size = {
                         TAG_BYTE: 1, TAG_SHORT: 2, TAG_INT: 4, TAG_LONG: 8,
@@ -293,18 +336,31 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
         elif tag_type == TAG_COMPOUND:
             output_lines.append(prefix)
 
+            # 親から渡された collector を保持。BlockStatePalette のリスト要素であれば新しい collector を作る。
+            current_collector = collector
+            append_collector = False
+            if is_list_element and parents_name == 'BlockStatePalette' and list_type == TAG_COMPOUND:
+                current_collector = {}
+                append_collector = True
+
             indent_level += 1
             while ci < hex_len:
                 ensure_available(ci, 1, "compound inner tag type peek")
+                # TAG_END が来たらそれを消費してループを抜ける
                 if hex_data[ci] == "00":
-                    parse_tag(is_list_element=False)
+                    parse_tag(parents_name=tag_name, is_list_element=False, collector=current_collector)
                     break
-                parse_tag(is_list_element=False)
+                # 子タグには常に current_collector を渡す（Properties 内の文字列を collector に格納するため）
+                parse_tag(parents_name=tag_name, is_list_element=False, collector=current_collector)
 
             if ci >= hex_len and (ci == 0 or hex_data[ci-1] != "00"):  # noqa
-                 output_lines.append(f"{'    ' * indent_level}; Error: Compound did not terminate with TAG_END.")  # noqa
+                output_lines.append(f"{'    ' * indent_level}; Error: Compound did not terminate with TAG_END.")  # noqa
 
             indent_level -= 1
+
+            # BlockStatePalette 要素として collector を作成していたら main_data に追加
+            if append_collector and current_collector is not None:
+                main_data.palette.append(current_collector)
 
         else:
             raise ValueError(f"Unsupported tag type encountered: {tag_type_hex} ({TAG_NAMES.get(tag_type)}) at offset {ci}")
@@ -320,14 +376,7 @@ def bin2nbt_styled(data: bytes, mode: Literal['compact', 'detailed'] = 'compact'
     except Exception as e:
         output_lines.append(f"\n; FATAL ERROR during parsing at byte offset {ci}: {e}")
 
-    return "\n".join(output_lines)
-
-
-@dataclass
-class arg:
-    input_file: str
-    output_file: Optional[str] = None
-    mode: Literal['compact', 'detailed'] = 'compact'
+    return "\n".join(output_lines), main_data
 
 
 if __name__ == "__main__":
@@ -362,10 +411,15 @@ if __name__ == "__main__":
             print(f"Error: Input file '{args.input_file}' not found.")
             exit(1)
 
-    result_string = bin2nbt_styled(data, mode=args.mode)
-    # print(result_string)
+    result_string, main_data = bin2nbt_styled(data, mode=args.mode)
+
+    print(main_data)
 
     if args.output_file:
+
+        if args.mode == 'detailed':
+            result_string = head + result_string
+
         output_dir = os.path.dirname(args.output_file)
 
         # ディレクトリパスが存在する場合（空文字列でない場合）にのみ作成
